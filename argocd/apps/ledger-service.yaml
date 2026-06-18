@@ -1,0 +1,28 @@
+# Argo CD Application: ledger-service.
+# Syncs services/ledger-service/ into the cluster. When a PR bumps the
+# image digest in deployment.yaml and gets merged, Argo CD auto-syncs
+# the new pod within ~3 minutes.
+#
+# Trust boundary (MaRisk AT 7.2): a bot opens the digest-bump PR;
+# a human reviews and merges. Argo CD only watches main — it cannot
+# deploy unmerged code.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ledger-service
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/chrissbo/platform-deploy.git
+    targetRevision: main
+    path: services/ledger-service
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ledger
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

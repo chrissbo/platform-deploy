@@ -1,0 +1,51 @@
+# Kyverno ClusterPolicy: every image whose registry is ghcr.io/chrissbo/*
+# must carry a Cosign keyless signature whose Fulcio cert subject is the
+# slsa-github-generator workflow we use, and whose issuer is GitHub OIDC.
+#
+# This is the cluster-boundary trust enforcement piece of Phase 3a:
+# the Sigstore signatures we already produce in Pipeline 3 (post-merge)
+# now have an admission-time consumer. Anything not signed by the right
+# workflow identity is rejected by Kyverno before the pod runs.
+#
+# Reference: research/cicd-toolchain/signing-trust-model.md §"Trust at the
+# cluster boundary".
+apiVersion: kyverno.io/v2beta1
+kind: ClusterPolicy
+metadata:
+  name: verify-ghcr-signatures
+  annotations:
+    policies.kyverno.io/title: Verify GHCR image signatures
+    policies.kyverno.io/category: Software Supply Chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Require Cosign keyless signatures with the expected workflow identity
+      for any image pulled from ghcr.io/chrissbo/*.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/chrissbo/*"
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    # Reusable-workflow trust separation: the post-merge
+                    # signing job runs in chrissbo/platform-golden-paths
+                    # (the reusable workflow definition), not in the caller
+                    # repo. Cosign records the workflow file that actually
+                    # executed the `cosign sign` command — that's the
+                    # subject we verify against here.
+                    subject: "https://github.com/chrissbo/platform-golden-paths/.github/workflows/ci-post-merge.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: "https://rekor.sigstore.dev"

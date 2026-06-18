@@ -1,0 +1,23 @@
+# Argo CD Application: Kyverno admission policies.
+# Syncs base/kyverno-policies/ into the cluster. Changes to policies
+# go through the same PR-approval trust boundary as workloads.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-policies
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/chrissbo/platform-deploy.git
+    targetRevision: main
+    path: base/kyverno-policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

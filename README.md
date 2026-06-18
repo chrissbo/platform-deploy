@@ -1,34 +1,39 @@
 # platform-deploy
 
 GitOps deploy repo for an end-to-end CI/CD pipeline simulation. Argo CD in a
-local kind cluster watches this repo; promotions to staging/prod are PRs here.
+local kind cluster watches this repo; promotions are PRs here.
 
 This repo is the **deploy repo** in a three-repo simulation:
 
 - [`ledger-service`](https://github.com/chrissbo/ledger-service) — the Go service.
 - [`platform-golden-paths`](https://github.com/chrissbo/platform-golden-paths) — reusable workflows + policies.
-- `platform-deploy` (this repo) — Helm/Kustomize manifests, Argo CD `Application` definitions, environment overlays.
+- `platform-deploy` (this repo) — Kubernetes manifests, Kyverno policies, Argo CD Application definitions.
 
-## What lives here
+## Structure
 
 ```
-apps/
-  ledger-service/
-    base/                  # Common manifests
-    overlays/
-      staging/             # Image digest pinned per release
-      prod/                # Image digest pinned per release
+base/
+  kyverno-policies/        # Admission policies (image signature verification)
+services/
+  ledger-service/          # Namespace + Deployment + Service for the ledger
 argocd/
-  applicationsets/         # ApplicationSet for ephemeral PR namespaces
-  applications/            # Per-environment Application definitions
+  apps/                    # Argo CD Application CRs (one per workload/policy set)
 ```
 
-The two-repo separation (code repo + deploy repo) mirrors the MaRisk AT 7.2
-separation-of-duties pattern described in the parent research.
+## Trust boundary (MaRisk AT 7.2)
 
-Plan and feasibility analysis:
-[`research/cicd-toolchain/local-simulation-feasibility.md`](https://github.com/chrissbo/upvest-platform/blob/main/research/cicd-toolchain/local-simulation-feasibility.md).
+The two-repo separation (code repo + deploy repo) enforces separation of duties:
+
+1. **Bot proposes** — post-merge CI in `ledger-service` opens a PR here bumping the image digest.
+2. **Human approves** — a reviewer verifies the digest matches a signed, attested build.
+3. **Argo CD syncs** — only after merge to `main`. It cannot deploy unmerged code.
+
+## Admission enforcement (Kyverno)
+
+The `verify-ghcr-signatures` ClusterPolicy requires any image from `ghcr.io/chrissbo/*`
+to carry a Cosign keyless signature from `platform-golden-paths/.github/workflows/ci-post-merge.yml@refs/heads/main`.
+Pods with unsigned or wrongly-signed images are rejected at admission.
 
 ## Status
 
-Phase 0 — bootstrap. Manifests and Argo CD applications still to come.
+Phase 3b — Argo CD + Kyverno + ledger-service deployed and syncing.
