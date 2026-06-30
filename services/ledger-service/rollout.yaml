@@ -35,7 +35,7 @@ spec:
         - name: ghcr-pull
       containers:
         - name: ledger-service
-          image: ghcr.io/chrissbo/ledger-service@sha256:a4bbb3dc58daa29ef309ead8410a1b2cbfd32605ab3a6994b3198ab992c4aaeb
+          image: ghcr.io/chrissbo/ledger-service@sha256:55c0fc5868fafdcee31e6fd95bc56c29b98fb3bc420b67066f5bc5412a70d4d7
           ports:
             - name: http
               containerPort: 8080
