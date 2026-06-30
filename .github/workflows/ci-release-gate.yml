@@ -1,0 +1,205 @@
+# Pipeline 4 — Pre-Deploy Release Gate.
+#
+# Runs on PRs that change a rollout image digest. Verifies the image's
+# supply-chain attestations (Cosign signature, SLSA provenance, SBOM)
+# and evaluates OPA/Conftest policies before allowing merge.
+#
+# This is the automated "should this be deployed?" check. It doesn't
+# deploy anything — it gates the PR. Argo CD handles the actual deploy
+# after merge.
+#
+# Reference: research/cicd-toolchain/architecture/pipelines.md §Pipeline 4
+
+name: ci-release-gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/**/rollout.yaml'
+
+permissions:
+  contents: read
+  packages: read        # Pull image metadata from GHCR
+  id-token: write       # Cosign keyless verification (OIDC)
+  pull-requests: write  # Post verdict comment
+
+jobs:
+  release-gate:
+    name: release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: checkout deploy repo
+        uses: actions/checkout@v4
+
+      - name: extract image from rollout
+        id: image
+        run: |
+          chmod +x .github/scripts/extract-image.sh
+          IMAGE=$(.github/scripts/extract-image.sh services/ledger-service/rollout.yaml)
+          echo "image=$IMAGE" | tee -a "$GITHUB_OUTPUT"
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+
+      - name: install crane
+        uses: imjasonh/setup-crane@v0.4
+
+      - name: install conftest
+        run: |
+          CONFTEST_VERSION=0.56.0
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | tar xz -C /usr/local/bin conftest
+
+      - name: fetch OPA policies
+        uses: actions/checkout@v4
+        with:
+          repository: chrissbo/platform-golden-paths
+          path: golden-paths
+          sparse-checkout: policies/release-gate
+
+      - name: build attestation input
+        id: attest
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          chmod +x .github/scripts/build-attestation-input.sh
+          .github/scripts/build-attestation-input.sh "$IMAGE"
+
+      - name: run conftest policy
+        id: conftest
+        run: |
+          set +e
+          OUTPUT=$(conftest test \
+            --policy golden-paths/policies/release-gate/ \
+            --namespace release_gate \
+            --output json \
+            attestation-input.json 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "output<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: build verdict
+        id: verdict
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          CONFTEST_EXIT: ${{ steps.conftest.outputs.exit_code }}
+        run: |
+          if [[ "$CONFTEST_EXIT" == "0" ]]; then
+            VERDICT="pass"
+            EMOJI="✅"
+          else
+            VERDICT="fail"
+            EMOJI="❌"
+          fi
+
+          # Read the attestation input for the summary
+          SIG=$(jq -r '.signature_verified' attestation-input.json)
+          PROV=$(jq -r '.provenance_verified' attestation-input.json)
+          SBOM=$(jq -r '.sbom_attested' attestation-input.json)
+          AGE=$(jq -r '.image_age_days' attestation-input.json)
+          BUILDER=$(jq -r '.builder_id' attestation-input.json)
+
+          # Build verdict.json
+          jq -n \
+            --arg verdict "$VERDICT" \
+            --arg image "$IMAGE" \
+            --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson sig "$SIG" \
+            --argjson prov "$PROV" \
+            --argjson sbom "$SBOM" \
+            --argjson age "$AGE" \
+            --arg builder "$BUILDER" \
+            --arg pr "${{ github.event.pull_request.number }}" \
+            --arg run_id "${{ github.run_id }}" \
+            '{
+              verdict: $verdict,
+              timestamp: $timestamp,
+              image: $image,
+              checks: [
+                {name: "cosign-signature", status: (if $sig then "pass" else "fail" end)},
+                {name: "slsa-provenance", status: (if $prov then "pass" else "fail" end)},
+                {name: "sbom-attestation", status: (if $sbom then "pass" else "fail" end)},
+                {name: "image-freshness", status: (if $age <= 7 then "pass" else "fail" end), detail: ("\($age) days")},
+                {name: "conftest-policy", status: (if $verdict == "pass" then "pass" else "fail" end)}
+              ],
+              pr: $pr,
+              run_id: $run_id
+            }' > verdict.json
+
+          cat verdict.json
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "emoji=$EMOJI" >> "$GITHUB_OUTPUT"
+
+      - name: upload verdict artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-verdict
+          path: verdict.json
+          retention-days: 90
+
+      - name: post verdict as PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          VERDICT: ${{ steps.verdict.outputs.verdict }}
+          EMOJI: ${{ steps.verdict.outputs.emoji }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          MARKER="<!-- release-gate-verdict -->"
+
+          # Build the comment body
+          SIG=$(jq -r '.checks[0].status' verdict.json)
+          PROV=$(jq -r '.checks[1].status' verdict.json)
+          SBOM=$(jq -r '.checks[2].status' verdict.json)
+          FRESH=$(jq -r '.checks[3].status' verdict.json)
+          FRESH_DETAIL=$(jq -r '.checks[3].detail' verdict.json)
+          POLICY=$(jq -r '.checks[4].status' verdict.json)
+
+          STATUS_ICON() { [[ "$1" == "pass" ]] && echo "✅" || echo "❌"; }
+
+          BODY=$(cat <<EOF
+          ${MARKER}
+          ## ${EMOJI} Release Gate — ${VERDICT^^}
+
+          **Image:** \`${IMAGE}\`
+
+          | Check | Status |
+          |-------|--------|
+          | Cosign signature | $(STATUS_ICON $SIG) ${SIG} |
+          | SLSA L3 provenance | $(STATUS_ICON $PROV) ${PROV} |
+          | SBOM attestation | $(STATUS_ICON $SBOM) ${SBOM} |
+          | Image freshness | $(STATUS_ICON $FRESH) ${FRESH} (${FRESH_DETAIL}) |
+          | Conftest policy | $(STATUS_ICON $POLICY) ${POLICY} |
+
+          <details><summary>Full verdict JSON</summary>
+
+          \`\`\`json
+          $(cat verdict.json)
+          \`\`\`
+          </details>
+
+          *Pipeline 4 — Pre-Deploy Release Gate ([run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}))*
+          EOF
+          )
+
+          # Dedupe: delete old verdict comment if present
+          OLD_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1)
+          if [[ -n "$OLD_ID" ]]; then
+            gh api -X DELETE "repos/${{ github.repository }}/issues/comments/${OLD_ID}" || true
+          fi
+
+          gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            -f body="$BODY" > /dev/null
+
+      - name: fail if verdict is not pass
+        if: ${{ steps.verdict.outputs.verdict != 'pass' }}
+        run: |
+          echo "::error::Release gate verdict: FAIL. See PR comment for details."
+          exit 1

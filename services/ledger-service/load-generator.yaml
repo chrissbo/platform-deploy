@@ -1,0 +1,38 @@
+# Load generator — sends steady traffic to ledger-service so Prometheus
+# has request metrics to evaluate during canary analysis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: ledger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+        - name: loader
+          image: curlimages/curl:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                curl -s http://ledger-service.ledger.svc.cluster.local/healthz > /dev/null
+                curl -s http://ledger-service.ledger.svc.cluster.local/balance/load-test > /dev/null
+                curl -s -X POST http://ledger-service.ledger.svc.cluster.local/deposits \
+                  -H 'Content-Type: application/json' \
+                  -d '{"account":"load-test","amount":1}' > /dev/null
+                sleep 1
+              done
+          resources:
+            requests:
+              cpu: "5m"
+              memory: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "32Mi"

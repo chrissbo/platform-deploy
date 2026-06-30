@@ -1,0 +1,73 @@
+# Argo Rollout — replaces the Deployment for progressive delivery.
+#
+# Canary strategy: 5% → 20% → 50% → 100% with AnalysisTemplate gates
+# checking Prometheus error rate between each step. Pauses are 30s for
+# fast demo; production would use 5–10 minutes.
+#
+# Argo Rollouts controller manages the ReplicaSets directly; Argo CD
+# syncs this manifest from Git and reports health via the built-in
+# Rollout health check.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: ledger-service
+  namespace: ledger
+  labels:
+    app: ledger-service
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: ledger-service
+  template:
+    metadata:
+      labels:
+        app: ledger-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: ledger-service
+          image: ghcr.io/chrissbo/ledger-service@sha256:6e3d910c0a4cffbfb3397dc394b7e5f87881e237dc296eab7d3322939bd1f05f
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+  strategy:
+    canary:
+      canaryService: ledger-service-canary
+      stableService: ledger-service-stable
+      steps:
+        - setWeight: 5
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+        - setWeight: 20
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+        - setWeight: 50
+        - pause: {duration: 30s}
+        - analysis:
+            templates:
+              - templateName: error-rate-check
+        - setWeight: 100
