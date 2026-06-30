@@ -28,9 +28,12 @@ echo "::endgroup::"
 
 echo "::group::Verifying SLSA provenance"
 BUILDER_ID=""
+# SLSA provenance is signed by slsa-framework's generator, not our own
+# workflow. The attestation type is the full URI, not the short alias.
+SLSA_IDENTITY="https://github.com/slsa-framework/"
 if cosign verify-attestation \
-  --type slsaprovenance \
-  --certificate-identity-regexp "${EXPECTED_IDENTITY}.*" \
+  --type https://slsa.dev/provenance/v0.2 \
+  --certificate-identity-regexp "${SLSA_IDENTITY}.*" \
   --certificate-oidc-issuer "$EXPECTED_ISSUER" \
   "$IMAGE" > /tmp/provenance-output.json 2>&1; then
   PROV_VERIFIED=true

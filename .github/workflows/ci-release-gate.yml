@@ -41,7 +41,7 @@ jobs:
           echo "image=$IMAGE" | tee -a "$GITHUB_OUTPUT"
 
       - name: install cosign
-        uses: sigstore/cosign-installer@v3.7.0
+        uses: sigstore/cosign-installer@v3.8.0
 
       - name: install crane
         uses: imjasonh/setup-crane@v0.4
