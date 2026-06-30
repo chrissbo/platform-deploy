@@ -73,41 +73,34 @@ fi
 echo "::endgroup::"
 
 echo "::group::Checking image freshness"
-# Extract creation date from the image config via crane.
+# Use the Rekor log timestamp from the cosign signature (when it was signed),
+# not the base image creation date (which reflects the distroless base, not our build).
 if command -v crane > /dev/null 2>&1; then
-  CREATED=$(crane config "$IMAGE" 2>/dev/null | jq -r '.created // empty' 2>/dev/null || echo "")
+  # Try to get the signature timestamp from Rekor via cosign verify output
+  SIGN_TIME=$(cosign verify \
+    --certificate-identity-regexp "${EXPECTED_IDENTITY}.*" \
+    --certificate-oidc-issuer "$EXPECTED_ISSUER" \
+    "$IMAGE" 2>/dev/null \
+    | jq -r '.[0].optional.Bundle.Payload.integratedTime // empty' 2>/dev/null || echo "")
+  if [[ -n "$SIGN_TIME" ]]; then
+    NOW_EPOCH=$(date +%s)
+    AGE_DAYS=$(( (NOW_EPOCH - SIGN_TIME) / 86400 ))
+  else
+    AGE_DAYS=0
+  fi
 else
-  # Fallback: use cosign tree timestamps
-  CREATED=""
-fi
-
-if [[ -n "$CREATED" ]]; then
-  CREATED_EPOCH=$(date -d "$CREATED" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${CREATED%%.*}" +%s 2>/dev/null || echo "0")
-  NOW_EPOCH=$(date +%s)
-  AGE_DAYS=$(( (NOW_EPOCH - CREATED_EPOCH) / 86400 ))
-else
-  AGE_DAYS=0  # Unable to determine; assume fresh
+  AGE_DAYS=0
 fi
 echo "Image age: ${AGE_DAYS} days"
 echo "::endgroup::"
 
-# Get the actual signer identity from cosign verify output
+# Get the actual signer identity from cosign verify output.
 echo "::group::Extracting builder identity"
 BUILDER_ID=$(cosign verify \
   --certificate-identity-regexp "${EXPECTED_IDENTITY}.*" \
   --certificate-oidc-issuer "$EXPECTED_ISSUER" \
   "$IMAGE" 2>/dev/null \
-  | jq -r '.[0].optional.CertSubject // .[0].optional."1.3.6.1.4.1.57264.1.1" // "unknown"' 2>/dev/null || echo "unknown")
-
-# If the above didn't work, try the certificate extensions
-if [[ "$BUILDER_ID" == "unknown" || -z "$BUILDER_ID" ]]; then
-  BUILDER_ID=$(cosign verify \
-    --certificate-identity-regexp "${EXPECTED_IDENTITY}.*" \
-    --certificate-oidc-issuer "$EXPECTED_ISSUER" \
-    --output-file=/tmp/cosign-verify.json \
-    "$IMAGE" 2>/dev/null && \
-    jq -r '.[0].optional.Subject // "unknown"' /tmp/cosign-verify.json 2>/dev/null || echo "unknown")
-fi
+  | jq -r '.[0].optional.Subject // "unknown"' 2>/dev/null || echo "unknown")
 echo "Builder: $BUILDER_ID"
 echo "::endgroup::"
 
