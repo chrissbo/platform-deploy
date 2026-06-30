@@ -1,7 +1,39 @@
+# Three services for Argo Rollouts canary traffic splitting.
+#
+# - ledger-service        = main entry point (routes to stable by default)
+# - ledger-service-stable = Argo Rollouts manages selector to point at stable RS
+# - ledger-service-canary = Argo Rollouts manages selector to point at canary RS
+---
 apiVersion: v1
 kind: Service
 metadata:
   name: ledger-service
+  namespace: ledger
+spec:
+  selector:
+    app: ledger-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-service-stable
+  namespace: ledger
+spec:
+  selector:
+    app: ledger-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-service-canary
   namespace: ledger
 spec:
   selector:

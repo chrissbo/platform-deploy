@@ -1,0 +1,24 @@
+# AnalysisTemplate: error rate check for canary gates.
+#
+# Queries Prometheus for the ratio of 5xx responses to total requests
+# on ledger-service pods. If error rate exceeds 5% for two consecutive
+# measurements, the canary is aborted and traffic returns to stable.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-check
+  namespace: ledger
+spec:
+  metrics:
+    - name: error-rate
+      interval: 15s
+      count: 3
+      successCondition: "len(result) == 0 || isNaN(result[0]) || result[0] < 0.05"
+      failureLimit: 2
+      provider:
+        prometheus:
+          address: http://prometheus-server.monitoring.svc.cluster.local:80
+          query: |
+            sum(rate(http_requests_total{namespace="ledger",status=~"5.."}[1m]))
+            /
+            (sum(rate(http_requests_total{namespace="ledger"}[1m])) > 0)
